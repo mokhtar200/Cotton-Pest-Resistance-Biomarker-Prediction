@@ -1,0 +1,77 @@
+# Load necessary libraries
+library(GEOquery)  # To download data from GEO
+library(Seurat)    # For analysis and clustering
+library(randomForest)  # Machine learning
+library(ROCR)      # For ROC analysis
+library(clusterProfiler)  # For Gene Ontology enrichment
+library(caret)     # For data partitioning and model evaluation
+library(ggplot2)   # For visualization
+
+# Step 1: Download and Load the Data from GEO (GSE106409 for pest resistance in cotton)
+# Using GEOquery package to fetch and load the data directly from GEO
+gse <- getGEO("GSE106409", GSEMatrix = TRUE)  # Replace with your GEO ID
+expression_data <- exprs(gse[[1]])  # Extract expression data matrix
+meta_data <- pData(gse[[1]])  # Extract meta data (samples)
+
+# Step 2: Data Preprocessing
+# Check for missing values in the dataset
+expression_data <- na.omit(expression_data)  # Remove rows with missing values
+
+# Log-transform the expression data (optional, depending on the dataset)
+expression_data <- log1p(expression_data)  # Log transformation to stabilize variance
+
+# Step 3: Quality Control and Feature Selection
+# Filter out low variance genes (optional)
+gene_variance <- apply(expression_data, 1, var)
+high_variance_genes <- names(gene_variance[gene_variance > quantile(gene_variance, 0.75)])
+expression_data <- expression_data[high_variance_genes, ]
+
+# Step 4: Class Labels (resistant vs susceptible based on meta data)
+# Assume the "characteristics_ch1" column in the meta data contains the class (e.g., 'resistant' and 'susceptible')
+response <- ifelse(grepl("resistant", meta_data$characteristics_ch1), 1, 0)  # 1 for resistant, 0 for susceptible
+
+# Step 5: Splitting the Data into Training and Testing Sets
+set.seed(123)
+trainIndex <- createDataPartition(response, p = 0.8, list = FALSE)
+train_data <- expression_data[, trainIndex]
+train_labels <- response[trainIndex]
+test_data <- expression_data[, -trainIndex]
+test_labels <- response[-trainIndex]
+
+# Step 6: Building the Predictive Model (Random Forest)
+rf_model <- randomForest(x = t(train_data), y = as.factor(train_labels), ntree = 100)
+print(rf_model)  # Print model summary
+
+# Step 7: Model Evaluation
+# Predict on the test data
+predictions <- predict(rf_model, t(test_data))
+
+# Evaluate model performance using ROC curve
+pred <- prediction(as.numeric(predictions), test_labels)
+perf <- performance(pred, "tpr", "fpr")
+plot(perf, main = "ROC Curve", col = "blue")
+
+# Step 8: Feature Importance (Marker Identification)
+# Check the importance of features (genes)
+feature_importance <- rf_model$importance
+important_genes <- feature_importance[order(feature_importance[, 1], decreasing = TRUE), ][1:10, ]
+print(important_genes)  # Print top 10 important genes
+
+# Step 9: Gene Ontology (GO) Enrichment Analysis (Optional)
+# Use the top important genes for pathway enrichment analysis
+enrich <- enrichGO(gene = rownames(important_genes), OrgDb = org.Hs.eg.db)
+enrich_results <- summary(enrich)
+write.csv(enrich_results, "go_enrichment_results.csv")
+
+# Step 10: Save Results
+# Save the predictive model and results
+saveRDS(rf_model, file = "rf_model.rds")
+write.csv(important_genes, file = "important_genes.csv")
+write.csv(predictions, file = "predictions.csv")
+
+# Optional: Visualize important genes (bar plot of importance)
+ggplot(important_genes, aes(x = reorder(rownames(important_genes), MeanDecreaseGini), y = MeanDecreaseGini)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Top 10 Important Genes for Pest Resistance", x = "Genes", y = "Importance")
